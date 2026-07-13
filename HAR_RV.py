@@ -6,6 +6,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from sklearn.linear_model import LinearRegression
 from arch import arch_model
+from scipy import stats
+
 
 #=== Part 1 ===
 #dowload SPY data from Yahoo Finance and clean it up
@@ -48,7 +50,11 @@ returns = df['Return'] * 100
 garch_model = arch_model(returns, mean='Zero', vol='Garch', p=1, q=1)
 garch_fit = garch_model.fit(disp='off')
 print(garch_fit.summary())
-df['GARCH_vol'] = garch_fit.conditional_volatility / 100 * np.sqrt(252)
+k_hat = np.mean(np.abs(garch_fit.std_resid))
+c_gauss = np.sqrt(2 / np.pi)          # 正态理论值,用来对照
+print("k_hat (estimated E|z|):", k_hat, " | Gaussian theory:", c_gauss)
+
+df['GARCH_vol'] = garch_fit.conditional_volatility / 100 * np.sqrt(252) * k_hat
 
 #=== Part 5 ===
 #In-sample comparison
@@ -74,10 +80,11 @@ plt.grid(True, alpha=0.2)
 # Strategy: sliding window of 1000 days, refit every 21 days
 
 train_size = 1000
-refit_every = 21
 
 predictions_har = []
 predictions_garch = []
+predictions_garch_g = []
+predictions_rw = []
 actuals = []
 prediction_dates = []
 
@@ -85,7 +92,7 @@ for t in range(train_size, len(df)):
     if (t - train_size) % 500 == 0:
         print(f"Processed day {t}/{len(df)}")
 
-    df_t = df.iloc[t-1000:t]
+    df_t = df.iloc[t-train_size:t]
     
     # HAR-RV: fit everyday
     X_t = df_t[['RV_d', 'RV_w', 'RV_m']]
@@ -100,29 +107,60 @@ for t in range(train_size, len(df)):
     garch_model_t = arch_model(returns_t, mean='Zero', vol='Garch', p=1, q=1)
     garch_fit_t = garch_model_t.fit(disp='off')
     forecast = garch_fit_t.forecast(horizon=1)
-    pred_garch = np.sqrt(forecast.variance.values[0, 0]) / 100 * np.sqrt(252)
+    sigma_next = np.sqrt(forecast.variance.values[0, 0]) / 100
+
+    k_hat_t = np.mean(np.abs(garch_fit_t.std_resid))
+    pred_garch = sigma_next * k_hat_t * np.sqrt(252)
+    pred_garch_g = sigma_next * np.sqrt(2 / np.pi) * np.sqrt(252)
     
     predictions_har.append(prediction_t)
     predictions_garch.append(pred_garch)
+    predictions_garch_g.append(pred_garch_g)
+    predictions_rw.append(df.iloc[t]['RV_d'])
     actuals.append(df.iloc[t]['RV'])
     prediction_dates.append(df.index[t])
 
 #Transfer to the form can be calculated
 predictions_har = np.array(predictions_har)
 predictions_garch = np.array(predictions_garch)
+predictions_garch_g = np.array(predictions_garch_g)
+predictions_rw = np.array(predictions_rw)
 actuals = np.array(actuals)
 
-mse_har_oos = np.mean((predictions_har - actuals) ** 2)
-mse_garch_oos = np.mean((predictions_garch - actuals) ** 2)
+e_har   = predictions_har     - actuals
+e_garch = predictions_garch   - actuals
+e_garch_g = predictions_garch_g - actuals
+e_rw    = predictions_rw      - actuals
 
-print("\n==== Out-of-sample MSE comparison ====")
-print("HAR-RV:mse_har_oos:", mse_har_oos)
-print("GARCH:mse_garch_oos:", mse_garch_oos)
+print("\n==== Out-of-sample MSE ====")
+print("HAR-RV               :", np.mean(e_har**2))
+print("GARCH (k_hat scale)  :", np.mean(e_garch**2))
+print("GARCH (Gaussian sqrt(2/pi)):", np.mean(e_garch_g**2))
+print("Random walk baseline :", np.mean(e_rw**2))
 
-print("\n==== In-sample vs Out-of-sample ====")
-print("HAR-RV  in-sample:",mse_har," out-of-sample:", mse_har_oos)
-print("GARCH   in-sample:",mse_garch," out-of-sample:", mse_garch_oos)
+def diebold_mariano(e1, e2, lag=5):
+    """H0: Two model squared-error loss identical。DM<0 mean the first model has less error."""
+    d = e1**2 - e2**2
+    n = len(d)
+    dbar = d.mean()
+    dc = d - dbar
+    var = np.mean(dc**2)
+    for h in range(1, lag + 1):                      # Newey-West
+        var += 2 * (1 - h / (lag + 1)) * np.mean(dc[h:] * dc[:-h])
+    dm = dbar / np.sqrt(var / n)
+    p = 2 * (1 - stats.norm.cdf(abs(dm)))
+    return dm, p
 
+print("\n==== Diebold-Mariano test ====")
+for name, (a, b) in [
+    ("HAR vs GARCH", (e_har, e_garch)),
+    ("HAR vs RW",    (e_har, e_rw)),
+    ("GARCH vs RW",  (e_garch, e_rw)),
+]:
+    dm, p = diebold_mariano(a, b)
+    verdict = "significant" if p < 0.05 else "NOT significant"
+    print(f"{name:14s}  DM = {dm:+.3f}  p = {p:.4f}  ({verdict})")
+print("(DM < 0 means the first model has lower squared error.)")
 
 #plot the out-of-sample forecasts vs actuals
 plt.figure(figsize=(16, 6))
