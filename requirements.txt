@@ -1,6 +1,7 @@
 yfinance
 pandas
-numpy
 matplotlib
+numpy
 scikit-learn
 arch
+scipy
