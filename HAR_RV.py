@@ -1,4 +1,4 @@
-#pip install yfinance pandas matplotlib numpy arch
+#pip install yfinance pandas matplotlib numpy arch scikit-learn scipy
 
 import yfinance as yf
 import pandas as pd
@@ -35,7 +35,6 @@ X = df[['RV_d', 'RV_w', 'RV_m']]
 y = df['RV']
 model = LinearRegression()
 model.fit(X, y)
-print(model.fit)
 print("Coefficients(RV-d):", model.coef_[0])
 print("Coefficients(RV-w):", model.coef_[1])
 print("Coefficients(RV-m):", model.coef_[2])
@@ -51,7 +50,7 @@ garch_model = arch_model(returns, mean='Zero', vol='Garch', p=1, q=1)
 garch_fit = garch_model.fit(disp='off')
 print(garch_fit.summary())
 k_hat = np.mean(np.abs(garch_fit.std_resid))
-c_gauss = np.sqrt(2 / np.pi)          # 正态理论值,用来对照
+c_gauss = np.sqrt(2 / np.pi)   # normal theory value, to compare
 print("k_hat (estimated E|z|):", k_hat, " | Gaussian theory:", c_gauss)
 
 df['GARCH_vol'] = garch_fit.conditional_volatility / 100 * np.sqrt(252) * k_hat
@@ -77,7 +76,8 @@ plt.grid(True, alpha=0.2)
 
 #=== Part 6 ===
 # Rolling out-of-sample comparison
-# Strategy: sliding window of 1000 days, refit every 21 days
+# Strategy: sliding window of 1000 days, refit every day
+# (I used every 21 days before, see "Refit frequency" in README)
 
 train_size = 1000
 
@@ -127,10 +127,10 @@ predictions_garch_g = np.array(predictions_garch_g)
 predictions_rw = np.array(predictions_rw)
 actuals = np.array(actuals)
 
-e_har   = predictions_har     - actuals
-e_garch = predictions_garch   - actuals
+e_har = predictions_har - actuals
+e_garch = predictions_garch - actuals
 e_garch_g = predictions_garch_g - actuals
-e_rw    = predictions_rw      - actuals
+e_rw = predictions_rw - actuals
 
 print("\n==== Out-of-sample MSE ====")
 print("HAR-RV               :", np.mean(e_har**2))
@@ -139,13 +139,13 @@ print("GARCH (Gaussian sqrt(2/pi)):", np.mean(e_garch_g**2))
 print("Random walk baseline :", np.mean(e_rw**2))
 
 def diebold_mariano(e1, e2, lag=5):
-    """H0: Two model squared-error loss identical。DM<0 mean the first model has less error."""
+    """H0: two models have the same squared-error loss. DM<0 mean the first model has less error."""
     d = e1**2 - e2**2
     n = len(d)
     dbar = d.mean()
     dc = d - dbar
     var = np.mean(dc**2)
-    for h in range(1, lag + 1):                      # Newey-West
+    for h in range(1, lag + 1):   # Newey-West
         var += 2 * (1 - h / (lag + 1)) * np.mean(dc[h:] * dc[:-h])
     dm = dbar / np.sqrt(var / n)
     p = 2 * (1 - stats.norm.cdf(abs(dm)))
